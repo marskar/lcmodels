@@ -5,3 +5,5 @@
 .DS_Store
 *.zip
 __MACOSX
+.Rbuildignore
+*.Rproj
