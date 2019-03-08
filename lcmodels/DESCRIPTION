@@ -1,0 +1,20 @@
+Package: lcmodels
+Title: Risk Predictions from Lung Cancer Models
+Version: 2.0.0
+Date: 2019-02-22
+Author: Li C. Cheung [aut, cre],
+        Stephanie A. Kovalchik [aut],
+        Hormuzd A. Katki [aut]
+Maintainer: Li C. Cheung <li.cheung@nih.gov>
+Description: The R package provides individual risks of lung cancer and lung cancer death 
+   based on various published papers: Bach et al., 2003; Spitz et al., 2007; 
+   Cassidy et al., 2008 (LLP); Hoggart et al., 2012; Tammemagi et al., 2013; 
+   Marcus et al., 2015 (LLPi); Wilson and Weissfeld, 2015 (Pittsburgh); 
+   Katki et al., 2016 (LCRAT and LCDRAT), Katki et al., 2018.
+Depends:
+    R (>= 3.5.2)
+Imports:
+    coxph.risk, VGAM
+License: GPL-2
+LazyData: true
+RoxygenNote: 6.1.1

@@ -1,0 +1,1090 @@
+risk.bach.10 <- function(data){     #
+   bach.formula <- function(outcome){#
+      # age = continuous#
+      # female = binary indicator#
+      # cpd = cigarettes per day#
+      # smkyears = years smoked#
+      # qtyears = years quit#
+      # asb = asbestos exposure binary indicator#
+      #Formula from appendix of Bach's paper minus coefficients#
+      formula.string <- "female+#
+      asb+#
+      age+#
+      I(I((age-53.459001)^3)*I(age>53))+#
+      I(I((age-61.954825)^3)*I(age>61))+#
+      I(I((age-70.910335)^3)*I(age>70))+#
+      qtyears+#
+      I((qtyears)^3)+#
+      I(I((qtyears-0.50513347)^3)*I(qtyears>0))+#
+      I(I((qtyears-12.295688)^3)*I(qtyears>12))+#
+      smkyears+#
+      I(I((smkyears-27.6577)^3)*I(smkyears>27))+#
+      I(I((smkyears-40)^3)*I(smkyears>40))+#
+      I(I((smkyears-50.910335)^3)*I(smkyears>50))+#
+      cpd+#
+      I(I((cpd-15)^3)*I(cpd>15))+#
+      I(I((cpd-20.185718)^3)*I(cpd>20))+#
+      I(I((cpd-40)^3)*I(cpd>40))"#
+      formula(paste(outcome,"~",formula.string,collapse=""))#
+   }#
+   # Coefficients from diagnosis of lung cancer appendix#
+   bach.coef <- c(intercept =-9.7960571,#
+                female =-0.05827261,#
+                asb =0.2153936,#
+                age=0.070322812,#
+                age2=-0.00009382122,#
+                age3=0.00018282661,#
+                age4=-0.000089005389,#
+                qtyears=-0.085684793,#
+                qtyears2=0.0065499693,#
+                qtyears3=-0.0068305845,#
+                qtyears4=0.00028061519,#
+                smkyears=0.11425297,#
+                smkyears1=-0.000080091477,#
+                smkyears2=0.00017069483,#
+                smkyears3=-0.000090603358,#
+                cpd =0.060818386,#
+                cpd1 =-0.00014652216,#
+                cpd2 =0.00018486938,#
+                cpd3 =-0.000038347226)#
+   # Coefficients from probability of death from something other than lung cancer#
+   bach.coef.mort <- c(Intercept=-7.2036219, female=-0.49042298, asb=0.06084611, #
+   						         age=0.099168033, age1=6.2174577e-06, age2=-1.2115774e-05, age3=5.8983164e-06, #
+   						         qtyears=-0.023358962, qtyears2=0.0019208669, qtyears3=-0.0020031611, qtyears4=8.2294194e-05, #
+   						         smkyears=0.020041889, smkyears1=6.5443781e-06, smkyears2=-1.3947696e-05, smkyears3=7.4033175e-06, #
+   						         cpd=0.015490665, cpd1=-1.737645e-05, cpd2=2.1924149e-05, cpd3=-4.5476985e-06)#
+  vars <- c("female",#
+  				   "age",#
+  				   "cpd",#
+            "smkyears",#
+            "qtyears",#
+            "asb")#
+  var.not.in <- names(data)[!(names(data)%in%vars)][1] # SELECT ARBITRARY VAR FOR OUTCOME#
+  P.lung <- matrix(0, nrow(data), ncol=10)#
+  P.death <- matrix(0, nrow(data), ncol=10)#
+  for(i in 1:10){#
+    # Calculate RRs and probabilities#
+  	rr.lung <- model.matrix(bach.formula(var.not.in), data)%*%bach.coef#
+	  rr.death <- model.matrix(bach.formula(var.not.in), data)%*%bach.coef.mort#
+	  P.lung[,i] <- .99629^exp(rr.lung)#
+	  P.death[,i] <- 0.9917663^exp(rr.death)#
+    # Update age, smoking and quit years for next cycle#
+	  data$age <- data$age+1#
+	  data$smkyears <- data$smkyears+ifelse(data$qtyears==0,1,0) # Add smoking year for current smokers#
+	  data$qtyears <- data$qtyears+ifelse(data$qtyears==0,0,1) # Add quit year for former smokers#
+   }#
+	# CUMULATIVE PROBABILITIES OF NO CANCER AND NO DEATH#
+   C.lung <- P.lung#
+   # Delete last column, put 1s in first column and shift other columns over by one#
+   C.lung[,2:10] <- C.lung[,1:9]#
+   C.lung[,1] <- 1#
+   C.lung <- t(apply(C.lung, 1, cumprod))#
+   C.mort <- P.death#
+   C.mort[,2:10] <- C.mort[,1:9]#
+   C.mort[,1] <- 1#
+   C.mort <- t(apply(C.mort, 1, cumprod))#
+   #The final risk calculation#
+   rowSums((1-P.lung)*P.death*C.lung*C.mort)#
+} #
+risk.hoggart <- function(data){#
+   weibull.one.year <- function(t,lambda, gamma, HR=1){     #
+      shape <- exp(gamma)#
+      scale <- exp(lambda)#
+      #Time zero set to 35#
+      t1 <- t-35+1#
+      t0 <- t-35#
+      #Calculate HR times shape/scale difference for one time point#
+      diff <- HR*((t0/scale)^shape-(t1/scale)^shape)#
+      #Return exponentiated difference  #
+      exp(diff)#
+   }#
+   hoggart.coef <- function(current.age, age, former, smkyears, hr.lung, hr.mort){#
+      #For current smokers, cut points for age started smoking#
+      age.current <- c(-1,18,20,22,24,26,28,30,100)#
+      #For former smokers, cut points for age started smoking#
+      age.former <- c(-1,22,26,100)#
+      #For former smokers, cut points for duration of smoking#
+      duration <- c(-1,20,30,36,42,100)#
+      #Shape and scale parameters from Table 2 of Hoggart paper#
+      lambda.lung.current <- c(3.819, 4.056, 4.23, 4.339, 4.38, 4.567, 4.506, 4.504)#
+      gamma.lung.current <- c(0.999, 1.071, 1.298, 1.518, 1.679, 1.517, 1.615, 1.684)#
+      lambda.mort.current <- c(3.69, 3.774, 3.859, 3.944, 3.979, 4.049, 4.096, 4.069)#
+      gamma.mort.current <- c(1.22, 1.312, 1.56, 1.775, 1.925, 1.854, 1.838, 1.912)#
+      lambda.lung.former <- c(4.987, 4.723, 4.321, 5.179, 4.786, 4.651, 4.654, 4.366, 5.563, 4.68, 4.491, 4.241, 4.177)#
+      gamma.lung.former <- c(0.75, 0.819, 1.032, 1.165, 1.353, 1.46, 1.318, 1.662, 1.088, 1.705, 1.879, 2.336, 2.574)#
+      lambda.mort.former <- c(3.754, 3.75, 3.8, 4.008, 3.975, 3.954, 3.928, 3.982, 4.123, 4.058, 4.02, 3.999, 4.041)#
+      gamma.mort.former <- c(1.21, 1.511, 1.669, 1.621, 1.742, 1.835, 2.129, 2.15, 1.769, 1.865, 2.148, 2.36, 2.49)#
+      if(former==1){#For former smokers#
+      	strata.age <- as.numeric(cut(age, age.former, lab=1:3)) # <=22, 22-26, >26#
+      	strata.duration <- as.numeric(cut(smkyears, duration, lab=1:5)) # Note that strata.age=1 only sees cut points at 20&30#
+      	strata <- ifelse(strata.age==1,ifelse(strata.duration>=3,3,strata.duration),#
+      									ifelse(strata.age==2,strata.duration+3,strata.duration+8)) # ifelse(test, yes, no)#
+        #Now assign correct lambdas and gammas to people in each strata#
+      	lambda.lung <- lambda.lung.former[strata]#
+      	gamma.lung <- gamma.lung.former[strata]#
+      	lambda.mort <- lambda.mort.former[strata]#
+      	gamma.mort <- gamma.mort.former[strata]#
+      }#
+      else{#For current smokers#
+      	strata <- as.numeric(cut(age, age.current, lab=1:8)) #Cut points for age started smoking#
+        #Assign correct lambdas and gammas to people in each strata#
+      	lambda.lung <- lambda.lung.current[strata]#
+      	gamma.lung <- gamma.lung.current[strata]#
+      	lambda.mort <- lambda.mort.current[strata]#
+      	gamma.mort <- gamma.mort.current[strata]#
+      }#
+      	#Return weibull estimates for probability of getting lung cancer after one year#
+      (1-weibull.one.year(current.age,lambda=lambda.lung, gamma=gamma.lung,HR=hr.lung))*weibull.one.year(current.age,lambda=lambda.mort, gamma=gamma.mort,HR=hr.mort)#
+   }#
+	data$former <- 1*(data$qtyears>0)#
+	#Cigarettes per day = CPD#
+	lung.cpd.beta <- ifelse(data$former==0,0.105300795832441,0.0421816490792434) #This is kindof like log(HR), but only matches#
+	mort.cpd.beta <- ifelse(data$former==0,0.0497334248502077,0.0146138105962148) # 3 decimal points reliably#
+	#Representation of CPD in the model#
+	data$cpd <- ifelse(data$former==1, #
+								ifelse(data$cpd<15, data$cpd-10.27171,15-10.27171), #former smokers#
+								ifelse(data$cpd<15, data$cpd-11.27674,15-11.27674) #current smokers#
+	)#
+	HR.lung <- exp(data$cpd*lung.cpd.beta)#
+	HR.mort <- exp(data$cpd*mort.cpd.beta)#
+	mapply(hoggart.coef, current.age=data$age, #
+        age=data$smoke.age.start, #
+        former=data$former, #
+        smkyears = data$smkyears,#
+        hr.lung = HR.lung, hr.mort = HR.mort)#
+}#
+risk.llp <- function(data){#
+   llp.formula <- function(outcome){      #
+      # pneu = any diagnosis of pneumonia#
+      # asb = asbestos exposure binary indicator#
+      # prior.cancer = any prior cancer#
+      # fam.cancer.onset = 1 or more first degree ; early onset (3 categories)#
+      # smkyears.cat = 5 categories      #
+      formula.string <- "pneu+asb+prior.cancer+fam.cancer.onset+smkyears.cat"#
+      formula(paste(outcome,"~",formula.string,collapse=""))#
+   }#
+   llp.coef <- c(intercept =1,#
+                 pneu=0.602,#
+                 asb=0.634,#
+                 prior.cancer=0.675,#
+                 fam.cancer.onset1=0.703,#
+                 fam.cancer.onset2=0.168,#
+                 smkyears.cat1=0.769,#
+                 smkyears.cat2=1.452,#
+                 smkyears.cat3=2.507,#
+                 smkyears.cat4=2.724)#
+   # To make the probabilities interpretable, they used Liverpool data to estimate the beta0, intercept here is from model#
+   llp.intercepts <- data.frame(#
+      incidence = c(15.5, 37.87, 88.65, 172.26, 329.02, 487.42, 616.45, 950.61, 1096.42,#
+                    5.97, 37.34, 68.14,175.24, 230.6, 288.06, 464.99, 594.19 ,497.09)/100000,#
+      intercept = -c(9.06,8.16, 7.31,6.63,5.97,5.56,5.31,4.83,4.68,#
+                     9.90,8.06,7.46,6.50,6.22,5.99,5.49,5.23,5.42),#
+      age = rep(1:9,2),#
+      female = rep(c(0,1),each=9))#
+   llp.intercept <- function(age, female){     #
+      #Assign age groups#
+      age.group <- function(age){#
+        if(age<45) 1#
+        else if(age<50) 2#
+        else if(age<55) 3#
+        else if(age<60) 4#
+        else if(age<65) 5#
+        else if(age<70) 6#
+        else if(age<75) 7#
+        else if(age<80) 8#
+        else 9#
+      }#
+      value <- function(age, age.cat, female){       #
+        if(age.cat==1)#
+          llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age==age.cat]#
+        else if(age.cat==2)#
+          sum(c(50-age-0.5, 0.5+age-45)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=2&llp.intercepts$age<=3])/5#
+        else if(age.cat==3)#
+          sum(c(55-age-0.5, 0.5+age-50)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=3&llp.intercepts$age<=4])/5#
+        else if(age.cat==4)#
+          sum(c(60-age-0.5, 0.5+age-55)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=4&llp.intercepts$age<=5])/5#
+        else if(age.cat==5)#
+          sum(c(65-age-0.5, 0.5+age-60)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=5&llp.intercepts$age<=6])/5#
+        else if(age.cat==6)#
+          sum(c(70-age-0.5, 0.5+age-65)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=6&llp.intercepts$age<=7])/5										#
+        else if(age.cat==7)#
+          sum(c(75-age-0.5, 0.5+age-70)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=7&llp.intercepts$age<=8])/5	#
+        else if(age.cat==8)#
+          sum(c(80-age-0.5, 0.5+age-75)*llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age>=8&llp.intercepts$age<=9])/5	#
+        else#
+          llp.intercepts$intercept[llp.intercepts$female==female&#
+            llp.intercepts$age==age.cat]#
+      }#
+      value(age, age.group(age), female)	#
+   }#
+   data$fam.lung.cancer <- 1*(data$fam.lung.trend>0)#
+   vars <- c("female",#
+   			     "fam.lung.cancer",#
+             "age",            #
+             "asb",            #
+             "smkyears",            #
+             "pneu",            #
+             "prior.cancer",#
+             "fam.cancer.onset")#
+   var.not.in <- names(data)[!(names(data)%in%vars)][1] # SELECT ARBITRARY VAR FOR OUTCOME#
+   expit <- function(x) exp(x)/(1+exp(x))#
+   data$fam.cancer.onset <- factor(data$fam.lung.cancer,lev=c(0,1,2))  #
+   data$smkyears.cat <- cut(data$smkyears, c(-1,1,21,41,60,max(data$smkyears)+1), right=FALSE, lab=1:5)#
+   #Manually construct the intercept#
+   intercept <- mapply(llp.intercept, age=data$age, female=data$female)#
+   X <- model.matrix(llp.formula(var.not.in), data)#
+   X[,1] <- intercept#
+   as.numeric(expit(X%*%llp.coef))#
+} #
+risk.llpi <- function(data){#
+   data$male <- as.numeric(data$female==0)#
+   #family history of lung cancer treated as late onset#
+   lp <- 0.036*data$age+0.391*data$male+0.043*data$smkyears+0.890*data$copd+1.044*data$prior.cancer+0.521*I(data$fam.cancer.onset==1)+0.071*I(data$fam.cancer.onset==2)#
+   #0.9728386 is the baseline survival at 8.7 years in the liverpool data#
+   #3.556 is the mean linear predictor in the liverpool data#
+   as.numeric(1-0.9728386**(exp(lp-3.556)))#
+}      #
+risk.spitz <- function(data){#
+   spitz.former.formula <- function(outcome){  #
+     # emp = emphysema (binary indicator)#
+     # dust = dust exposure  (binary indicator)#
+     # fam.cancer = 2 or more first degree relatives#
+     # fam.smoke.cancer = 1 or more first degree#
+     # no.hayfever = no hay fever (binary indicator)#
+     # age.stopped = categorical 3 groups	#
+     formula.string <- "emp+dust+fam.cancer+no.hayfever+age.stopped"   #
+     formula(paste(outcome,"~",formula.string,collapse=""))#
+   }#
+   spitz.current.formula <- function(outcome){#
+     # emp = emphysema (binary indicator)#
+     # dust = dust exposure  (binary indicator)#
+     # asb = asbestos exposure binary indicator#
+     # fam.smoke.cancer = 1 or more first degree#
+     # no.hayfever = no hay fever (binary indicator)#
+     # packyears.cat = categorical 4 groups	#
+     formula.string <- "emp+dust+asb+fam.smoke.cancer+no.hayfever+packyears.cat"  #
+     formula(paste(outcome,"~",formula.string,collapse=""))#
+   }#
+   spitz.baseline <- function(rr, age, female, former){#
+     age.group <- function(age){#
+       if(age<45) 1#
+       else if(age<50) 2#
+       else if(age<55) 3#
+       else if(age<60) 4#
+       else if(age<65) 5#
+       else if(age<70) 6#
+       else if(age<75) 7#
+       else if(age<80) 8#
+       else if(age<85) 9#
+       else 10#
+     }#
+     age.cat <- age.group(age)#
+     #I is incidence rate, h2 is mortality from something not lung cancer#
+     I <- spitz.rates$incidence[spitz.rates$female==female&spitz.rates$age==age.cat] #This selects one gender and one agecat#
+     h2 <- spitz.rates$mortality[spitz.rates$female==female&spitz.rates$age==age.cat]#
+     #Generate h1 (hazard from lung cancer) for men/women and former/current smokers#
+     if(female==1&former==1)#
+       h1 <- I*3.76*(1-0.45352)#
+     else if(female==1&former==0)#
+       h1 <- I*4.17*(1-0.51404)		#
+     else if(female==0&former==1)#
+       h1 <- I*3.17*(1-0.45352)	#
+     else#
+       h1 <- I*3.88*(1-0.51404)#
+     #Model output#
+     h1*rr/(h1*rr+h2)*(1-exp(-(h1*rr+h2)))#
+   }#
+   spitz.former.coef <- c(intercept =0,#
+                          emp=0.9734,#
+                          dust = 0.4654,#
+                          fam.cancer = 0.4636,#
+                          no.hayfever = 0.3711,#
+                          age1 = 0.2130,#
+                          age2 = 0.4080)#
+   spitz.current.coef <- c(intercept =0,#
+                           emp=0.7561,#
+                           dust = 0.3067,#
+                           asb=0.4109,#
+                           fam.smoke.cancer = 0.3859,#
+                           no.hayfever = 0.4047,#
+                           py1 = 0.2219,#
+                           py2 = 0.3747,#
+                           py3 = 0.6151)#
+   spitz.rates <- data.frame(#
+     incidence = c(10.78, 25.49, 56.60, 116.58, 221.18, 346.77, 478.10, 564.36, 532.36, 498.44, #
+                   11.03, 23.19, 45.51, 93.93, 164.9, 246.85, 318.69, 344.67, 308.28, 266.72)/100000,#
+     mortality = c(275.1, 400.7, 560.0, 786.9, 1210.2, 1855.1, 2947.4, 4836.4, 7980.7, 15559.4,#
+                   153.20, 218.80, 313.40, 479.10, 762.90, 1197.00, 1968.30, 3306.10, 5761.20, 14016.2)/100000,#
+     age = rep(1:10,2),#
+     female = rep(c(0,1),each=10))#
+     #Incidence and mortality rates are each done for women and men separately#
+   data$age.stopped[is.na(data$age.stopped)] <- 0#
+   data$former <- 1*(data$qtyears>0)   #
+   vars <- c("female", #
+             "age",#
+             "asb",                  #
+             "emp",#
+             "dust",#
+             "former",#
+             "no.hayfever",#
+             "pkyr.cat",#
+             "fam.cancer",#
+             "fam.smoke.cancer",#
+             "age.stopped")#
+   var.not.in <- names(data)[!(names(data)%in%vars)][1] # SELECT ARBITRARY VAR FOR OUTCOME#
+   data$packyears.cat <- cut(data$pkyr.cat,c(-1,28,42,57.5,max(data$pkyr.cat)+1),right=FALSE,labels=1:4)#
+   data$age.stopped <- cut(data$age.stopped, c(-1,42,53.1,max(data$age.stopped)+1),right=FALSE,labels=1:3)#
+   # DATA FRAME HAS TO HAVE VARIABLES FOR EACH MODEL#
+   rr.former <- model.matrix(spitz.former.formula(var.not.in), data)%*%spitz.former.coef#
+   rr.current <- model.matrix(spitz.current.formula(var.not.in), data)%*%spitz.current.coef#
+   rr.former <- exp(rr.former)#
+   rr.current <- exp(rr.current)#
+   risk.former <- mapply(spitz.baseline,rr=rr.former,age=data$age,female=data$female,#
+                         MoreArgs=list(former=1))#
+   risk.current <- mapply(spitz.baseline,rr=rr.current,age=data$age,female=data$female,#
+                          MoreArgs=list(former=0))#
+   ifelse(data$former==1,risk.former,risk.current)#
+} #
+risk.tammemagi <- function(data){#
+   tammemagi.formula <- function(outcome){   #
+       # age = continuous#
+       # race = categorical#
+       # edu = ordinal#
+       # bmi = continuous#
+       # fam.lung.cancer = binary#
+       # prior.cancer = binary#
+       # copd = binary#
+       # cpd = cigarettes per day#
+       # current = binary#
+       # smkyears = years smoked#
+       # qtyears = years quit#
+       formula.string <- "I(age-62)+#
+                    black+hispanic+asian+indian+islander+#
+                    I(edu6-4)+#
+                    I(bmi-27)+#
+                    fam.lung.cancer+#
+                    prior.cancer+#
+                    copd+#
+                    current+#
+                    I(10/cpd-.402154)+#
+                    I(qtyears-10)+#
+                    I(smkyears-27)"              #
+       formula(paste(outcome,"~",formula.string,collapse=""))#
+   }#
+   tammemagi.coef <- c(intercept=-4.532506,#
+                       age = 0.0778868,#
+                       black = 0.3944778,#
+                       hispanic = -0.7434744,#
+                       asian = -0.466585,#
+                       indian = 1.027152,#
+                       islander = 0,#
+                       edu = -0.0812744,#
+                       bmi = -0.0274194,#
+                       fam.lung.cancer = 0.587185,#
+                       prior.cancer = 0.4589971,#
+                       copd = 0.3553063,#
+                       current = 0.2597431,#
+                       cpd = -1.822606,#
+                       qtyears = -0.0308572,#
+                       smkyears = 0.0317321)#
+   data$black <- 1*(data$race==1)#
+   data$hispanic <- 1*(data$race==2)#
+   data$fam.lung.cancer <- 1*(data$fam.lung.trend>0)#
+   data$current <- 1*(data$qtyears==0)#
+   vars <- c("age",#
+             "black","hispanic","asian","islander","indian",#
+             "edu6",#
+             "bmi",#
+             "fam.lung.cancer",#
+             "prior.cancer",#
+             "copd",#
+             "cpd",#
+             "current",#
+             "smkyears",#
+             "qtyears")#
+   var.not.in <- names(data)[!(names(data)%in%vars)][1] # SELECT ARBITRARY VAR FOR OUTCOME#
+   X <- model.matrix(tammemagi.formula(var.not.in), data)#
+   lp <- X%*%tammemagi.coef#
+   exp(lp)/(1+exp(lp))#
+} #
+risk.kovalchik <-#
+function (begin, end, newdata, coxph1, ...) #
+{#
+    #calculate absolute risk given hazards/survival and relative risks#
+    risk.fixed.interval <- function(H, RR) {#
+        if (!is.list(H)) #
+            0#
+        else {#
+            absrisk <- H[[1]]$surv^RR[1] * H[[1]]$haz * RR[1]#
+            for (i in 2:length(H)) {#
+                absrisk <- absrisk * (H[[i]]$surv^RR[i])#
+            }#
+            sum(absrisk)#
+        }#
+    }#
+    models <- c.coxph.risk(coxph1, ...)#
+    #check for missing#
+    which.kept <- complete.cases(newdata)#
+    if (!all(which.kept)) {#
+        warning("Missing cases excluded.")#
+        if (length(begin) > 1) {#
+            begin <- begin[which.kept]#
+            end <- end[which.kept]#
+        }#
+        newdata <- newdata[which.kept, ]#
+    }#
+    #calculate relative risk for each subject and store as list#
+    rr <- sapply(models, projection.relrisk, data = newdata)#
+    if (is.matrix(rr)) { rr.list <- lapply(1:nrow(rr), function(x) rr[x, ])#
+    } else { rr.list <- list(rr)}#
+    #estimate risk#
+    if (length(begin) == 1) {    #
+       AllVars <- unique(unlist(sapply(models, function(x) all.vars(x$formula))))#
+        in.interval <- function(x, begin, end) x >= begin & x <= end#
+        if ("lung.cancer.death" %in% AllVars){#
+          H <- list(models[[1]]$basehaz[in.interval(models[[1]]$basehaz$time, begin, end),], models[[2]]$basehaz_LCDRAT[in.interval(models[[1]]$basehaz$time, begin, end),])#
+        } else if ("case" %in% AllVars){#
+          H <- list(models[[1]]$basehaz[in.interval(models[[1]]$basehaz$time, begin, end),], models[[2]]$basehaz_LCRAT[in.interval(models[[1]]$basehaz$time, begin, end),])        #
+        }#
+        #calculate absolute risk given hazards/survival for average covariate values and relative risks#
+        risks <- mapply(risk.fixed.interval, RR = rr.list, MoreArgs = list(H = H))#
+    } else {#
+        risks <- mapply(risk, begin = begin, end = end, RR = rr.list, MoreArgs = list(models = models))#
+    }#
+    risks#
+}#
+#' Wrapper to the cut() function#
+#'#
+#' A wrapper to the cut() function, so that you can automatically break into quantiles as#
+#' the default behavior, otherwise if the breakpoints are included, then just break on those.#
+#' In all cases, include.lowest is set to True      #
+#' @export#
+cuts <- function(data,npieces,simple.labels=T,...) {#
+  if (length(npieces)==0 | any(is.na(npieces)) | any(!is.numeric(npieces)))#
+    stop("npieces must be a numeric scalar or a vector of breakpoints")#
+  if (length(npieces)==1)#
+    # Just break into quantiles.  Use quantile labelling: Q1,Q2,Q3,etc. if you want#
+    if (simple.labels)#
+      cutdata <- cut(data,breaks=quantile(data,seq(0,1,1/npieces),na.rm=T,...),#
+                     include.lowest=T,labels=paste("Q",1:npieces,sep=""),...)#
+    else#
+      cutdata <- cut(data,breaks=quantile(data,seq(0,1,1/npieces),na.rm=T,...),#
+                     include.lowest=T,...)#
+  else#
+    # Break into pieces as specified by the breakpoints#
+    if (simple.labels)#
+      cutdata <- cut(data,breaks=npieces,include.lowest=T,#
+                     labels=paste("Q",1:(length(npieces)-1),sep=""),...)#
+    else#
+      cutdata <- cut(data,breaks=npieces,include.lowest=T,...)#
+  return(cutdata)#
+}#
+#' Lung Cancer Death Risk Predictor#
+#'#
+#' This function produces individual 5-year lung cancer death risks given #
+#' subjects' covariates.  It evaluates the pros (lung cancer death risk #
+#' reduction for each subject) and cons (risk of a false positive lung #
+#' cancer diagnosis for each subject) of low-dose computed tomography (CT) #
+#' lung cancer screening.#
+#'#
+#' @import coxph.risk VGAM#
+#' @param x A numeric matrix containing individuals' covariates for the model.  #
+#'  Covariates should be in the following column and format:#
+#'  column 1 - current age (numeric);#
+#'  column 2 - gender (1=Female, 0=Male);#
+#'  column 3 - smoking status (0=Never, 1=Former, 2=Current);#
+#'  column 4 - age started smoking (numeric or NA);#
+#'  column 5 - age quit smoking (numeric or NA);#
+#'  column 6 - cigarettes per day (numeric or NA);#
+#'  column 7 - race (0=Non-hispanic white,#
+#'                   1=Non-hispanic Black/African American, #
+#'                   2=Hispanic, #
+#'                   3=Other Ethnicity);#
+#'  column 8 - lung disease (1=COPD or Emphysema, 0=No COPD or Emphysema);#
+#'  column 9 - number of parents with lung cancer (0,1,2);#
+#'  column 10 - height (inches);#
+#'  column 11 - weight (pounds);#
+#'  column 12 - highest education level (1=<12 grade, #
+#'                                       2=HS graduate, #
+#'                                       3=post hs, no college, #
+#'                                       4=associate degree/some college, #
+#'                                       5=bachelors degree, #
+#'                                       6=graduate school);#
+#'  column 13 - asbestos exposure binary indicator (used for Bach, 2003 and Spitz, 2007);#
+#'  column 14 - prior history of pneumonia indicator (used for LLP, 2008);#
+#'  column 15 - prior history of cancer indicator (used for LLP, 2008; LLPi, 2015, and Tammemagi, 2013);#
+#'  column 16 - family history of lung cancer (0=none, 1=early onset, 2=late onset) (used for LLP, 2008 and LLPi, 2015);#
+#'  column 17 - Dust exposure  (binary indicator) (used for Spitz, 2007);#
+#'  column 18 - 2 or more first degree relatives with cancer (binary indicator) (used for Spitz, 2007);#
+#'  column 19 - 1 or more first degree with smoking cancer (binary indicator) (used for Spitz, 2007);#
+#'  column 20 - no hay fever (binary indicator) (used for Spitz, 2007);#
+#'  column 21 - asian ethnicity (binary indicator) (used for Tammemagi, 2013);#
+#'  column 22 - islander ethnicity (binary indicator) (used for Tammemagi, 2013);#
+#'  column 23 - American indian ethnicity (binary indicator) (used for Tammemagi, 2013);#
+#'  If height and weight are unavailable but BMI is available, set weight to bmi/703 and set height to 1.#
+#'#
+#' @return A numeric matrix containing individuals' predictions:#
+#'   column 1 - An indicator variable for whether the individual is eligible #
+#'              for CT lung screening according to #
+#'              US Preventive Services Task Force (USPSTF) recommendations.#
+#'   column 2 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will die from lung cancer within 5 years, #
+#'              if they do not attend screening.#
+#'   column 3 - In the NLST, those who underwent 3 rounds of annual CT #
+#'              screening had their risk reduced by 20 percent.  #
+#'              Therefore, among those who would have died from lung cancer#
+#'              in 5 years, this is the number who will not die from lung #
+#'              cancer death within 5 years, if they undergo 3 yearly CT #
+#'              lung screens as in the NLST.#
+#'   column 4 - Out of 1000 people eligible for lung screening according to #
+#'              the US Preventive Services Task Force (USPSTF) recommendations, #
+#'              this is the number estimated to have less reduction in #
+#'              lung cancer death than someone with this risk factor profile.#
+#'   column 5 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 5 years, if they do not attend screening (LCRAT).#
+#'   column 6 - In the NLST, those who underwent CT screening had 12.4 percent #
+#'              more lung cancer diagnosed, all of which require treatment.  #
+#'              Therefore, among 1000 people with this risk-factor profile, #
+#'              this is the number of extra lung cancer that would be #
+#'              diagnosed within 5 years, if they undergo 3 #
+#'              yearly CT lung screens as in the NLST.#
+#'   column 7 - Out of 1000 NLST participants with this risk profile, #
+#'              this is the number who had at least one false-positive #
+#'              CT screen out of 3 screens.#
+#'   column 8 - Out of 1000 NLST participants with this risk profile, #
+#'              this is the total number of false-positive #
+#'              CT screens out of 3 screens.#
+#'   column 9 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 5 years, if they do not attend screening (Bach, 2003).#
+#'   column 10 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 1 years, if they do not attend screening (Hoggart, 2012).#
+#'   column 11 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 5 years, if they do not attend screening (LLP, 2008).#
+#'   column 12 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 7.8 years, if they do not attend screening (LLPi, 2015).#
+#'   column 13 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 1 years, if they do not attend screening (Spitz, 2007).#
+#'   column 14 - Among 1000 people in the US with this risk-factor profile, #
+#'              this is the number who will be diagnosed with lung cancer #
+#'              within 6 years, if they do not attend screening (Tammemagi, 2013).#
+#' @export#
+#' @examples#
+#' age <- c(66,58,75,72,56)#
+#' height <- c(73,65,64,62,69)#
+#' weight <- c(176,169,150,148,166)#
+#' cpd <- c(36,36,40,24,40)#
+#' emp <- c(0,1,1,0,1)#
+#' fam.lung.trend <- c(0,2,0,2,0)#
+#' female <- c(0,1,0,1,0)#
+#' smkstat <- c(2,2,1,1,1)#
+#' smkstart <- c(23,21,21,24,21)#
+#' agequit <- c(NA,NA,66,66,50)#
+#' race <- c(0,1,2,2,3)#
+#' edu6 <- c(3,5,4,5,5)#
+#' asb <- c(0,0,0,0,0)#
+#' pneu <- c(0,0,0,0,0)#
+#' prior.cancer <- c(0,0,0,0,0)#
+#' fam.cancer.onset <- c(0,1,0,2,0)#
+#' dust <- c(0,0,0,0,0)#
+#' fam.cancer <- c(0,1,0,1,0)#
+#' fam.smoke.cancer <- c(0,1,0,1,0)#
+#' no.hayfever <- c(0,0,0,0,0)#
+#' asian <- c(0,0,0,0,1)#
+#' islander <- c(0,0,0,0,0)#
+#' indian <- c(0,0,0,0,0)#
+#' #
+#' persons <- cbind(age,#
+#'                  female,#
+#'                  smkstat,#
+#'                  smkstart,#
+#'                  agequit,#
+#'                  cpd,#
+#'                  race,#
+#'                  emp,#
+#'                  fam.lung.trend,#
+#'                  height,#
+#'                  weight,#
+#'                  edu6,#
+#'                  asb,#
+#'                  pneu,#
+#'                  prior.cancer,#
+#'                  fam.cancer.onset,#
+#'                  dust,#
+#'                  fam.cancer,#
+#'                  fam.smoke.cancer,#
+#'                  no.hayfever,#
+#'                  asian,#
+#'                  islander,#
+#'                  indian)#
+#' #
+#' persons_predictions <- lcrisk(persons)#
+#' persons_predictions#
+lcrisk <- function(x) {#
+   requireNamespace("coxph.risk", quietly = TRUE)#
+   requireNamespace("VGAM", quietly = TRUE)#
+   x <- as.matrix(x)#
+   female <- x[,2]#
+   race <- as.factor(x[,7])#
+   edu6 <- x[,12]#
+   fam.lung.trend <- x[,9]#
+   emp <- x[,8]#
+   bmi <- 703*x[,11]/x[,10]^2#
+   cpd <- x[,6]#
+   age.stopped <- x[,5]#
+   qtyears <- ifelse(x[,3]==1,x[,1]-age.stopped,0)#
+   qtyears[qtyears<0] <- 0#
+   age <- x[,1]#
+   smoke.age.start <- x[,4]#
+   smkyears <- ifelse(x[,3]==2,age-smoke.age.start,ifelse(x[,3]==1,age-qtyears-smoke.age.start,0))#
+   smkyears[smkyears<0] <- 0#
+   pkyr.cat <- smkyears*cpd/20#
+   asb <- x[,13]#
+   pneu <- x[,14]#
+   prior.cancer <- x[,15]#
+   fam.cancer.onset <- as.factor(x[,16])#
+   copd <- emp#
+   dust <- x[,17]#
+   fam.cancer <- x[,18]#
+   fam.smoke.cancer <- x[,19]#
+   no.hayfever <- x[,20]#
+   asian <- x[,21]#
+   islander <- x[,22]#
+   indian <- x[,23]#
+   covar <- data.frame(age=age,#
+                       bmi=bmi,#
+                       cpd=cpd,#
+                       emp=emp,#
+                       fam.lung.trend=fam.lung.trend,#
+                       female=female,#
+                       qtyears=qtyears,#
+                       smkyears=smkyears,#
+                       race=race,#
+                       edu6=edu6,#
+                       pkyr.cat=pkyr.cat,#
+                       asb=asb,#
+                       smoke.age.start=smoke.age.start,#
+                       pneu = pneu,#
+                       prior.cancer = prior.cancer,#
+                       fam.cancer.onset = fam.cancer.onset,#
+                       copd=copd,#
+                       dust=dust,#
+                       fam.cancer=fam.cancer,#
+                       fam.smoke.cancer=fam.smoke.cancer,#
+                       no.hayfever=no.hayfever,#
+                       age.stopped=age.stopped,#
+                       asian = asian,#
+                       islander = islander,#
+                       indian = indian)#
+   ### Bach 2003 ###   #
+   r.bach <- risk.bach.10(covar)#
+   ### Hoggart 2012 ####
+   r.hoggart <- risk.hoggart(covar)#
+   ### LLP 2008 ####
+   r.llp <- risk.llp(covar)#
+   ### LLPi 2015 ####
+   r.llpi <- risk.llpi(covar)#
+   ### Spitz 2007 ####
+   r.spitz <- risk.spitz(covar)#
+   ### Tammemagi 2013 ####
+   r.tamme <- risk.tammemagi(covar)#
+   uspstf_elig <- ifelse(age>=50 & age<=80 & pkyr.cat>=30 & qtyears <= 15,1,0)#
+   #calculate predicted risks of lung cancer death within 5 years based on LCDRAT with competing risk of death#
+   covar$LCDRAT <- risk.kovalchik(0, 5, covar[,1:11], LCDRAT, cox.death)#
+   #calculate predicted risks of lung cancer death using chest xray#
+   covar$cxLCDRAT <- 0.796*covar$LCDRAT#
+   #calculate predicted risks of lung cancer incidence within 5 years based on LCRAT with competing risk of death#
+   covar$LCRAT <- risk.kovalchik(0, 5, covar[,1:11], LCRAT, cox.death)#
+   covar$LCRAT <- pmax(covar$LCRAT,covar$LCDRAT)#
+   #calculate predicted risks of lung cancer incidence using chest xray#
+   covar$cxLCRAT <- 1.124*covar$LCRAT#
+   #calculate probability of Y, number of false positives, taking values of 0, 1, 2, or 3 #
+   #responses are reported as log(P(Y=1)/P(Y=0)), log(P(Y=2)/P(Y=0)), and log(P(Y=3)/P(Y=0))#
+   prob_numfalsepos <- predict(polytmod,type="response",newdata=covar)#
+   #solving for P(Y=0), P(Y=1), P(Y=2), and P(Y=3), we have:#
+   covar$prob_0falsepos <- prob_numfalsepos[,1]#
+   covar$prob_1falsepos <- prob_numfalsepos[,2]#
+   covar$prob_2falsepos <- prob_numfalsepos[,3]#
+   covar$prob_3falsepos <- prob_numfalsepos[,4]#
+   covar$expected_falsepos <- covar$prob_1falsepos + 2*covar$prob_2falsepos + 3*covar$prob_3falsepos#
+   ### US preventive service task force eligible - uspstf_elig#
+   ### number out of 1000 with this risk profile who will die from lung cancer death in 5 years without screening - 1000*covar$LCDRAT  #
+   ### Reduction in 5 year lung cancer death risk due to screening - 1000*(covar$LCDRAT - covar$cxLCDRAT)#
+   ### Of those eligible for lung screening, number who have less reduction - covar$rank#
+   covar$rank <- rep(NA,length(covar$LCDRAT))#
+   for (i in 1:length(covar$LCDRAT)){#
+      covar$rank[i] <- sum(riskdist[,2] <= 100*covar$LCDRAT[i])#
+   }#
+   ### chance of lung cancer diagnosis without screening - 1000*covar$LCRAT#
+   ### increase in lung cancer diagnosis due to screening - 1000*(covar$cxLCRAT - covar$LCRAT)#
+   ### chance of false positive CT lung screen - 1000*(1-covar$prob_0falsepos)#
+   predicted <- data.frame(uspstf_elig,#
+                           1000*covar$LCDRAT,#
+                           1000*(covar$LCDRAT - covar$cxLCDRAT),#
+                           covar$rank,#
+                           1000*covar$LCRAT,#
+                           1000*(covar$cxLCRAT - covar$LCRAT),#
+                           1000*(1-covar$prob_0falsepos),#
+                           1000*covar$expected_falsepos,#
+                           1000*r.bach,#
+                           1000*r.hoggart,#
+                           1000*r.llp,#
+                           1000*r.llpi,#
+                           1000*r.spitz,#
+                           1000*r.tamme)#
+   colnames(predicted) <- c("USPSTF eligible",#
+                            "Number of lung cancer deaths within 5-years per 1000",#
+                            "Screening reduced lung cancer deaths within 5-years per 1000",#
+                            "Number with less reduction per 1000",#
+                            "Number with lung cancer diagnosed within 5-years per 1000 (LCRAT)",#
+                            "Screening increase lung cancer diagnosis within 5-years per 1000",#
+                            "Persons with false-positive CT lung screens per 1000",#
+                            "Total number of false-positive CT lung screens per 1000",#
+                            "Number of lung cancer diagnosed within 10-years per 1000 (Bach, 2003)",#
+                            "Number of lung cancer diagnosed within 1-years per 1000 (Hoggart, 2012)",#
+                            "Number of lung cancer diagnosed within 5-years per 1000 (LLP, 2008)",#
+                            "Number of lung cancer diagnosed within 7.8-years per 1000 (LLPi, 2015)",#
+                            "Number of lung cancer diagnosed within 1-year per 1000 (Spitz, 2007)",#
+                            "Number of lung cancer diagnosed within 6-year per 1000 (Tammemagi, 2013)")#
+   predicted                         #
+}
+library(survey)#
+library(data.table)#
+#
+#load("~/Desktop/Lung cancer/lrisk/other/lifeyearsgained/nhis_proj")#
+#nhis <- subset(nhis,age>=50 & age<=80) #
+load("~/Desktop/Lung cancer/lrisk/other/nhis2010_12/old/jama paper/nhis_risk5_imputed.RData")
+source(file="~/Desktop/Lung cancer/lrisk/prog/modelcompare/riskproj.R")
+source(file="~/Desktop/Lung cancer/lrisk/prog/modelcompare/riskproj2.R")
+persons <- data.frame(age=nhis$age,#
+                      female=nhis$female,#
+                      smkstat=ifelse(nhis$former,1,2),#
+                      smkstart=nhis$smoke.age.start,#
+                      agequit=nhis$agequit,#
+                      cpd=nhis$cpd,#
+                      race=as.numeric(as.character(nhis$race)),#
+                      emp=nhis$emp,#
+                      fam.lung.trend=nhis$fam.lung.trend,#
+                      height=1,#
+                      weight=nhis$bmi/703,#
+                      edu6=nhis$edu6,#
+                      asb=rep(0,nrow(nhis)),#
+                      pneu=nhis$pneu,#
+                      prior.cancer=nhis$prior.cancer,#
+                      fam.cancer.onset=nhis$fam.cancer.onset,#
+                      dust=rep(0,nrow(nhis)),#
+                      fam.cancer=nhis$fam.cancer,#
+                      fam.smoke.cancer=nhis$fam.smoke.cancer,#
+                      no.hayfever=nhis$no.hayfever,#
+                      asian=nhis$asian,#
+                      islander=nhis$islander,#
+                      indian=nhis$indian)#
+nhis$predict <- lcrisk(persons,5)                 #
+#
+nhis$LCDRAT <- nhis$predict[,2]/1000
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
+library(coxph.risk)
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
+load("/Users/cheunglc/Desktop/Lung cancer/lrisk/prog/rpackage/lcrisks2/data/best_AIC_models.RData")
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
+load("/Users/cheunglc/Desktop/Lung cancer/lrisk/prog/rpackage/lcrisks2/data/polytomousmodel.RData")
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
+load("/Users/cheunglc/Desktop/Lung cancer/lrisk/prog/rpackage/lcrisks2/data/riskdist.RData")
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
+library(VGAM)
+age <- c(66,58,75,72,56)                      #
+height <- c(73,65,64,62,69)                   #
+weight <- c(176,169,150,148,166)              #
+cpd <- c(36,36,40,24,40)                      #
+emp <- c(0,1,1,0,1)                           #
+fam.lung.trend <- c(0,2,0,2,0)                #
+female <- c(0,1,0,1,0)                        #
+smkstat <- c(2,2,1,1,1)                       #
+smkstart <- c(23,21,21,24,21)                 #
+agequit <- c(NA,NA,66,66,50)                  #
+race <- c(0,1,2,2,3)                          #
+edu6 <- c(3,5,4,5,5)                          #
+asb <- c(0,0,0,0,0)                           #
+pneu <- c(0,0,0,0,0)                          #
+prior.cancer <- c(0,0,0,0,0)                  #
+fam.cancer.onset <- c(0,1,0,2,0)              #
+dust <- c(0,0,0,0,0)                          #
+fam.cancer <- c(0,1,0,1,0)                    #
+fam.smoke.cancer <- c(0,1,0,1,0)              #
+no.hayfever <- c(0,0,0,0,0)                   #
+asian <- c(0,0,0,0,1)                         #
+islander <- c(0,0,0,0,0)                      #
+indian <- c(0,0,0,0,0)                        #
+persons <- cbind(age,                         #
+                 female,                      #
+                 smkstat,                     #
+                 smkstart,                    #
+                 agequit,                     #
+                 cpd,                         #
+                 race,                        #
+                 emp,                         #
+                 fam.lung.trend,              #
+                 height,                      #
+                 weight,                      #
+                 edu6,                        #
+                 asb,                         #
+                 pneu,                        #
+                 prior.cancer,                #
+                 fam.cancer.onset,            #
+                 dust,                        #
+                 fam.cancer,                  #
+                 fam.smoke.cancer,            #
+                 no.hayfever,                 #
+                 asian,                       #
+                 islander,                    #
+                 indian)                      #
+persons_predictions <- lcrisk(persons)        #
+persons_predictions
